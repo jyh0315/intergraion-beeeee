@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>적분 배틀</title>
+<meta name="description" content="친구와 실시간으로 겨루는 적분 대결 (Integration Bee 스타일)" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>∫</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjs@12.4.0/lib/browser/math.js"></script>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="top">
+  <a class="logo" href="./"><span>∫</span> 적분 배틀</a>
+  <span class="me" id="meTag"></span>
+</header>
+
+<main>
+  <!-- 홈 -->
+  <section id="home" class="screen">
+    <div class="hero">
+      <h1>적분 <em>배틀</em></h1>
+      <p>Integration Bee처럼, 친구보다 먼저 적분을 풀어라.</p>
+    </div>
+    <div class="card">
+      <label class="field">
+        <span>닉네임</span>
+        <input id="nameInput" maxlength="12" placeholder="닉네임 입력" autocomplete="off" />
+      </label>
+      <button class="btn primary big" id="createBtn">방 만들기</button>
+      <div class="divider"><span>또는</span></div>
+      <div class="row">
+        <input id="codeInput" maxlength="5" placeholder="방 코드" autocomplete="off" class="code-input" />
+        <button class="btn" id="joinBtn">참가</button>
+      </div>
+      <div class="divider"><span>연습</span></div>
+      <button class="btn ghost" id="soloBtn">혼자 연습하기</button>
+      <p class="msg" id="homeMsg"></p>
+    </div>
+    <details class="card help">
+      <summary>답 입력 방법</summary>
+      <ul>
+        <li>정확한 값으로 입력: <code>pi/4</code>, <code>ln2</code>, <code>e-1</code>, <code>sqrt(pi)/2</code>, <code>pi^2/6</code></li>
+        <li><code>π</code>, <code>√</code> 기호도 OK. <code>2pi</code>처럼 곱셈 기호 생략 가능</li>
+        <li>0.7854 같은 소수 근삿값은 인정되지 않아요</li>
+        <li>오답이면 2초 동안 다시 제출할 수 없어요</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- 로비 -->
+  <section id="lobby" class="screen hidden">
+    <div class="card">
+      <div class="lobby-head">
+        <div>
+          <div class="label" id="lobbyLabel">방 코드</div>
+          <div class="room-code" id="roomCode">-----</div>
+        </div>
+        <button class="btn small" id="copyBtn">초대 링크 복사</button>
+      </div>
+      <div class="settings">
+        <label class="field"><span>난이도</span>
+          <select id="setDiff">
+            <option value="easy">쉬움</option>
+            <option value="normal">보통</option>
+            <option value="hard">어려움</option>
+          </select>
+        </label>
+        <label class="field"><span>문제 수</span>
+          <select id="setRounds">
+            <option>3</option><option selected>5</option><option>7</option><option>10</option>
+          </select>
+        </label>
+        <label class="field"><span>제한 시간</span>
+          <select id="setTime">
+            <option value="30">30초</option><option value="60">60초</option>
+            <option value="90">90초</option><option value="120">2분</option>
+            <option value="180">3분</option><option value="300">5분</option>
+          </select>
+        </label>
+      </div>
+      <h3 class="sub">참가자 <span id="playerCount"></span></h3>
+      <ul class="players" id="lobbyPlayers"></ul>
+      <button class="btn primary big" id="startBtn">게임 시작</button>
+      <p class="msg" id="lobbyMsg"></p>
+      <button class="btn ghost" id="leaveBtn">나가기</button>
+    </div>
+  </section>
+
+  <!-- 게임 -->
+  <section id="game" class="screen hidden">
+    <div class="game-top">
+      <span class="badge" id="diffBadge"></span>
+      <span class="round" id="roundLabel"></span>
+      <span class="clock" id="clock"></span>
+    </div>
+    <div class="bar"><div id="timeBar"></div></div>
+    <div class="board">
+      <div class="problem-wrap card">
+        <div class="problem" id="problem"></div>
+        <div class="overlay" id="readyOverlay"><div class="count" id="readyCount">3</div><div>준비!</div></div>
+        <div class="reveal hidden" id="reveal">
+          <div class="reveal-title" id="revealTitle"></div>
+          <div class="reveal-ans" id="revealAns"></div>
+          <div class="reveal-next" id="revealNext"></div>
+        </div>
+      </div>
+      <aside class="card scores">
+        <h3 class="sub">점수</h3>
+        <ul id="scoreList"></ul>
+      </aside>
+    </div>
+    <form class="answer card" id="answerForm" autocomplete="off">
+      <div class="answer-row">
+        <span class="eq">=</span>
+        <input id="answerInput" placeholder="예: pi/4, ln2, e-1" spellcheck="false" />
+        <button class="btn primary" id="submitBtn">제출</button>
+      </div>
+      <div class="preview" id="preview"></div>
+      <div class="feedback" id="feedback"></div>
+    </form>
+  </section>
+
+  <!-- 결과 -->
+  <section id="result" class="screen hidden">
+    <div class="card">
+      <h2 class="result-title" id="resultTitle">결과</h2>
+      <ol class="ranking" id="ranking"></ol>
+      <button class="btn primary big" id="againBtn">다시 하기</button>
+      <button class="btn" id="toLobbyBtn">로비로</button>
+      <p class="msg" id="resultMsg"></p>
+      <button class="btn ghost" id="leave2Btn">나가기</button>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
