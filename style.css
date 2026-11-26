@@ -61,6 +61,14 @@ body {
 main { max-width: 860px; }
 .screen { max-width: 520px; }
 #game.screen { max-width: none; }
+#lobby.screen { max-width: 640px; }
+.mode-desc { margin: 8px 0 16px; color: var(--muted); font-size: 15px; }
+.type-tag { color: var(--pen); font-size: 14px; }
+.answer .btn.skip { background: var(--paper); color: var(--red-deep); border-left: 2px solid var(--red); }
+.answer .btn.skip:hover { background: var(--pink); }
+.bubbles .more { font: 500 13px/28px var(--sans); color: var(--muted); }
+.result-mode { margin: 0 0 4px; color: var(--red-deep); font-size: 14px; }
+#revealCat { color: var(--red-deep); }
 .lede { margin: 0 0 24px; max-width: 34em; color: var(--ink); }
 
 /* 양식 칸: 빨간 괘선, 분홍 라벨 칸 */
@@ -138,8 +146,8 @@ kbd { font: 500 14px "IBM Plex Mono", monospace; color: var(--pen); background: 
 }
 .room-code span:last-child { border-right: 0; }
 .solo-mark { padding: 12px 14px; }
-.settings { flex-wrap: wrap; }
-.settings .cell { flex-direction: column; min-width: 140px; }
+.settings { flex-wrap: wrap; overflow: hidden; }
+.settings .cell { flex-direction: column; min-width: 140px; border-left: 1.5px solid var(--red); margin-left: -1.5px; }
 .settings .key { border-right: 0; border-bottom: 1.5px solid var(--red); padding: 6px 14px; }
 
 .roster { margin-top: 24px; }
@@ -262,7 +270,6 @@ kbd { font: 500 14px "IBM Plex Mono", monospace; color: var(--pen); background: 
   .join .cell { flex: 1 1 100%; }
   .join .btn { flex: 1 1 100%; border-left: 0; border-top: 1.5px solid var(--red); }
   .answer .btn { padding: 0 18px; }
-  .settings .cell { flex: 1 1 100%; flex-direction: row; border-left: 0; }
-  .settings .cell + .cell { border-top: 1.5px solid var(--red); }
+  .settings .cell { flex: 1 1 100%; flex-direction: row; border-left: 0; margin-left: 0; border-top: 1.5px solid var(--red); margin-top: -1.5px; }
   .settings .key { border-bottom: 0; border-right: 1.5px solid var(--red); padding: 0 10px; }
 }

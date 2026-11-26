@@ -59,6 +59,7 @@
           <li>정확한 값으로 적어요: <kbd>pi/4</kbd> <kbd>ln2</kbd> <kbd>e-1</kbd> <kbd>sqrt(pi)/2</kbd> <kbd>pi^2/6</kbd></li>
           <li><kbd>π</kbd>, <kbd>√</kbd> 기호도 되고, <kbd>2pi</kbd>처럼 곱하기는 생략해도 돼요.</li>
           <li>0.7854 같은 소수 근삿값은 인정하지 않아요.</li>
+          <li>부정적분은 x에 대한 식으로 적어요: <kbd>x^3/3</kbd> <kbd>xe^x - e^x</kbd> <kbd>ln(x^2+1)/2</kbd>. +C는 적어도 되고 안 적어도 돼요.</li>
           <li>틀리면 2초 동안 다시 낼 수 없어요.</li>
         </ul>
       </details>
@@ -76,24 +77,63 @@
         <button class="btn" id="copyBtn">초대 링크 복사</button>
       </div>
 
+      <div class="form">
+        <label class="cell"><span class="key">게임 방식</span>
+          <select id="setMode" class="ink">
+            <option value="rounds">문제 수 대결</option>
+            <option value="race">선착 점수 (몇 점 내기)</option>
+            <option value="attack">타임어택</option>
+          </select>
+        </label>
+      </div>
+      <p class="mode-desc" id="modeDesc"></p>
+
       <div class="form settings">
         <label class="cell"><span class="key">난이도</span>
           <select id="setDiff" class="ink">
             <option value="easy">쉬움</option>
             <option value="normal">보통</option>
             <option value="hard">어려움</option>
+            <option value="mixed">섞어서 (쉬움→어려움)</option>
           </select>
         </label>
-        <label class="cell"><span class="key">문제 수</span>
+        <label class="cell"><span class="key">문제 종류</span>
+          <select id="setKind" class="ink">
+            <option value="all">정적분 + 부정적분</option>
+            <option value="d">정적분만</option>
+            <option value="i">부정적분만</option>
+          </select>
+        </label>
+      </div>
+      <div class="form settings">
+        <label class="cell" id="cellRounds"><span class="key">문제 수</span>
           <select id="setRounds" class="ink">
-            <option>3</option><option selected>5</option><option>7</option><option>10</option>
+            <option>3</option><option>5</option><option>7</option><option>10</option><option>15</option>
           </select>
         </label>
-        <label class="cell"><span class="key">제한 시간</span>
+        <label class="cell" id="cellTarget"><span class="key">목표 점수</span>
+          <select id="setTarget" class="ink">
+            <option value="2">2점 먼저</option><option value="3">3점 먼저</option>
+            <option value="5">5점 먼저</option><option value="7">7점 먼저</option>
+          </select>
+        </label>
+        <label class="cell" id="cellAttack"><span class="key">전체 시간</span>
+          <select id="setAttack" class="ink">
+            <option value="60">1분</option><option value="120">2분</option>
+            <option value="180">3분</option><option value="300">5분</option><option value="600">10분</option>
+          </select>
+        </label>
+        <label class="cell" id="cellTime"><span class="key">문제당 시간</span>
           <select id="setTime" class="ink">
             <option value="30">30초</option><option value="60">1분</option>
             <option value="90">1분 30초</option><option value="120">2분</option>
             <option value="180">3분</option><option value="300">5분</option>
+          </select>
+        </label>
+        <label class="cell"><span class="key">오답 감점</span>
+          <select id="setPenalty" class="ink">
+            <option value="0">없음</option>
+            <option value="1">틀리면 1점 감점</option>
           </select>
         </label>
       </div>
@@ -115,6 +155,7 @@
       <div class="game-top">
         <span class="badge" id="diffBadge"></span>
         <span class="round" id="roundLabel"></span>
+        <span class="type-tag" id="typeTag"></span>
         <span class="clock" id="clock" aria-live="off"></span>
       </div>
       <div class="marks" aria-hidden="true"><div id="timeBar"></div></div>
@@ -134,7 +175,7 @@
                 <path d="M24 92 L 178 8" />
               </svg>
             </div>
-            <p class="reveal-next" id="revealNext"></p>
+            <p class="reveal-next"><span id="revealCat"></span> <span id="revealNext"></span></p>
           </div>
         </div>
         <aside class="omr">
@@ -150,6 +191,7 @@
             <input id="answerInput" class="ink" placeholder="pi/4, ln2, e-1 …" spellcheck="false" />
           </label>
           <button class="btn primary" id="submitBtn">제출</button>
+          <button class="btn skip hidden" id="skipBtn" type="button">넘기기</button>
         </div>
         <div class="preview" id="preview" aria-live="polite"></div>
         <div class="feedback" id="feedback" role="status"></div>
@@ -158,6 +200,7 @@
 
     <!-- 결과 -->
     <section id="result" class="screen hidden">
+      <p class="result-mode" id="resultMode"></p>
       <h2 class="result-title" id="resultTitle">결과</h2>
       <ol class="ranking" id="ranking"></ol>
       <div class="actions">

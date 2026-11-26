@@ -1,15 +1,16 @@
-import { PROBLEMS, DIFFICULTY_LABEL, DEFAULT_TIME } from "./problems.js";
-import { checkAnswer, evaluate } from "./check.js";
+import { PROBLEMS, getProblem, DIFFICULTY_LABEL, DEFAULT_TIME } from "./problems.js";
+import { checkAnswer, previewAnswer } from "./check.js";
 
 const $ = (s) => document.querySelector(s);
 const READY_MS = 3000;   // 문제 시작 전 카운트다운
 const REVEAL_MS = 4000;  // 정답 공개 후 다음 문제까지
 const LOCK_MS = 2000;    // 오답 시 재제출 금지
+const SKIP_MS = 1500;    // 타임어택 넘기기 후 대기
 const MAX_PLAYERS = 8;
 const FB_VERSION = "10.12.2";
 
 let fb = null;          // Firebase 핸들
-let mode = null;        // 'online' | 'solo' | null
+let net = null;        // 'online' | 'solo' | null
 let roomCode = null;
 let room = null;        // 현재 방 상태 { meta, players, game }
 let myUid = null;
@@ -18,6 +19,10 @@ let unsubRoom = null;
 let timers = [];
 let shownKey = null;
 let lockUntil = 0;
+let busy = false;
+let skipUntil = 0;
+
+const DEFAULT_META = { mode: "rounds", difficulty: "normal", kind: "all", totalRounds: 5, target: 3, attackTime: 180, timeLimit: DEFAULT_TIME.normal, penalty: 0 };
 
 const now = () => Date.now() + serverOffset;
 
@@ -51,7 +56,7 @@ function effectiveHost() {
   const on = ps.filter((p) => p.online !== false).sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
   return on[0]?.uid || room.meta.hostId;
 }
-const isHost = () => mode === "solo" || effectiveHost() === myUid;
+const isHost = () => net === "solo" || effectiveHost() === myUid;
 
 /* ---------------- Firebase ---------------- */
 async function initFirebase() {
@@ -90,7 +95,7 @@ async function createRoom() {
       if (!(await f.get(f.r(`rooms/${code}/meta`))).exists()) break;
     }
     await f.set(f.r(`rooms/${code}`), {
-      meta: { difficulty: "normal", totalRounds: 5, timeLimit: DEFAULT_TIME.normal, hostId: f.uid, createdAt: f.serverTimestamp() },
+      meta: { ...DEFAULT_META, hostId: f.uid, createdAt: f.serverTimestamp() },
       game: { status: "lobby" },
     });
     await enterRoom(code, name);
@@ -114,10 +119,10 @@ async function enterRoom(code, name) {
   const mine = players[f.uid];
   if (!mine && Object.keys(players).length >= MAX_PLAYERS) throw new Error("방이 가득 찼어요");
   const meRef = f.r(`rooms/${code}/players/${f.uid}`);
-  await f.update(meRef, { name, online: true, score: mine?.score || 0, joinedAt: mine?.joinedAt || f.serverTimestamp() });
+  await f.update(meRef, { name, online: true, joinedAt: mine?.joinedAt || f.serverTimestamp() });
   f.onDisconnect(meRef).update({ online: false });
 
-  mode = "online"; roomCode = code; myUid = f.uid;
+  net = "online"; roomCode = code; myUid = f.uid;
   history.replaceState(null, "", `?room=${code}`);
   homeMsg("");
   unsubRoom = f.onValue(f.r(`rooms/${code}`), (s) => {
@@ -129,10 +134,10 @@ async function enterRoom(code, name) {
 
 function startSolo() {
   const name = getName() || "나";
-  mode = "solo"; roomCode = null; myUid = "me"; serverOffset = 0;
+  net = "solo"; roomCode = null; myUid = "me"; serverOffset = 0;
   room = {
-    meta: { difficulty: "normal", totalRounds: 5, timeLimit: DEFAULT_TIME.normal, hostId: "me" },
-    players: { me: { name, score: 0, online: true } },
+    meta: { ...DEFAULT_META, hostId: "me" },
+    players: { me: { name, online: true } },
     game: { status: "lobby" },
   };
   homeMsg("");
@@ -141,7 +146,7 @@ function startSolo() {
 
 async function leave() {
   clearTimers();
-  if (mode === "online" && fb) {
+  if (net === "online" && fb) {
     unsubRoom?.();
     const meRef = fb.r(`rooms/${roomCode}/players/${myUid}`);
     fb.onDisconnect(meRef).cancel();
@@ -153,37 +158,54 @@ async function leave() {
       if (!Object.values(left).some((p) => p.online !== false)) await fb.remove(fb.r(`rooms/${roomCode}`));
     } catch (e) { console.warn(e); }
   }
-  mode = null; room = null; roomCode = null; shownKey = null;
+  net = null; room = null; roomCode = null; shownKey = null;
   history.replaceState(null, "", location.pathname);
   show("home");
 }
 
-/* ---------------- 게임 상태 전이 (온라인/연습 공통) ---------------- */
-// 각 함수는 game 객체를 받아 새 game을 돌려주거나, 해당 없으면 null
+/* ---------------- 점수 ---------------- */
 // RTDB는 숫자 키 객체를 배열로 돌려줄 수 있어서 객체로 통일
 const toObj = (x) => (Array.isArray(x) ? Object.fromEntries(x.map((v, i) => [i, v]).filter(([, v]) => v != null)) : x || {});
+const winsOf = (uid, g) => Object.values(toObj(g.results)).filter((v) => v === uid).length;
+function scoreOf(uid, g = room.game) {
+  const pen = toObj(g.pen)[uid] || 0;
+  const plus = g.mode === "attack" ? toObj(g.solved)[uid] || 0 : winsOf(uid, g);
+  return plus - pen;
+}
+const myIndex = (g = room.game) => toObj(g.prog)[myUid] || 0;
+function currentProblem(g = room.game) {
+  const i = g.mode === "attack" ? myIndex(g) : g.round;
+  return i < g.order.length ? getProblem(g.order[i]) : null;
+}
+
+/* ---------------- 게임 상태 전이 (온라인/연습 공통) ---------------- */
+// 각 함수는 game 객체를 받아 새 game을 돌려주거나, 해당 없으면 null
 const T = {
   win: (r, uid) => (g) =>
     g.status === "playing" && g.round === r && g.phase === "question" && now() >= g.roundStart
       ? { ...g, phase: "reveal", winner: uid, revealAt: now(), results: { ...toObj(g.results), [r]: uid } } : null,
-  timeout: (r, limitMs) => (g) =>
-    g.status === "playing" && g.round === r && g.phase === "question" && now() >= g.roundStart + limitMs - 300
+  timeout: (r) => (g) =>
+    g.status === "playing" && g.round === r && g.phase === "question" && now() >= g.roundStart + g.timeLimit * 1000 - 300
       ? { ...g, phase: "reveal", winner: null, revealAt: now(), results: { ...toObj(g.results), [r]: "-" } } : null,
   advance: (r) => (g) => {
     if (!(g.status === "playing" && g.round === r && g.phase === "reveal")) return null;
-    if (r + 1 >= g.order.length) return { ...g, status: "finished", phase: "done" };
+    const winners = new Set(Object.values(toObj(g.results)));
+    const reached = g.mode === "race" && [...winners].some((uid) => scoreOf(uid, g) >= g.target);
+    if (reached || r + 1 >= g.order.length) return { ...g, status: "finished", phase: "done" };
     return { ...g, round: r + 1, phase: "question", winner: null, revealAt: null, roundStart: now() + READY_MS };
   },
+  attackEnd: () => (g) =>
+    g.status === "playing" && g.mode === "attack" && now() >= g.endAt - 300 ? { ...g, status: "finished" } : null,
 };
 
 // 트랜잭션 적용. 성공하면 새 game 값, 아니면 null
 async function applyGame(transform) {
-  if (mode === "solo") {
+  if (net === "solo") {
     const ng = transform(structuredClone(room.game));
     if (ng) { room.game = ng; render(); }
     return ng;
   }
-  if (mode !== "online") return null;
+  if (net !== "online") return null;
   const res = await fb.runTransaction(fb.r(`rooms/${roomCode}/game`), (g) => {
     if (!g) return g;
     return transform(g) ?? undefined; // undefined = 중단
@@ -191,25 +213,54 @@ async function applyGame(transform) {
   return res.committed ? res.snapshot.val() : null;
 }
 
+// game/<key>/<내 uid> 값을 원자적으로 늘림. bumps = { prog: 1, solved: 1 }
+async function bump(bumps) {
+  if (net === "solo") {
+    for (const [k, by] of Object.entries(bumps)) room.game[k] = { ...toObj(room.game[k]), [myUid]: (toObj(room.game[k])[myUid] || 0) + by };
+    render(); return;
+  }
+  const up = {};
+  for (const [k, by] of Object.entries(bumps)) up[`${k}/${myUid}`] = fb.increment(by);
+  await fb.update(fb.r(`rooms/${roomCode}/game`), up);
+}
+
+/* ---------------- 게임 시작 ---------------- */
+function poolOf(diff, kind) {
+  return PROBLEMS[diff].filter((p) => kind === "all" || p.type === kind).map((p) => p.id);
+}
+function buildOrder(m) {
+  const diffs = m.difficulty === "mixed" ? ["easy", "normal", "hard"] : [m.difficulty];
+  const groups = diffs.map((d) => shuffle(poolOf(d, m.kind)));
+  if (m.mode === "rounds") {
+    if (groups.length === 1) return groups[0].slice(0, m.totalRounds);
+    const n = m.totalRounds, e = Math.ceil(n / 3), h = Math.floor(n / 3);
+    return [...groups[0].slice(0, e), ...groups[1].slice(0, n - e - h), ...groups[2].slice(0, h)];
+  }
+  if (m.mode === "attack") return groups.flat(); // 쉬운 것부터
+  return shuffle(groups.flat());
+}
+
 async function startGame() {
   if (!isHost()) return;
-  const pool = PROBLEMS[room.meta.difficulty];
-  const n = Math.min(room.meta.totalRounds, pool.length);
-  const order = shuffle([...pool.keys()]).slice(0, n);
-  const game = { status: "playing", order, round: 0, phase: "question", roundStart: now() + READY_MS };
-  if (mode === "solo") {
-    room.game = game;
-    for (const p of Object.values(room.players)) p.score = 0;
-    shownKey = null; render(); return;
-  }
-  const up = { game };
-  for (const uid of Object.keys(room.players || {})) up[`players/${uid}/score`] = 0;
-  await fb.update(fb.r(`rooms/${roomCode}`), up);
+  const m = room.meta;
+  const order = buildOrder(m);
+  if (!order.length) { toast("조건에 맞는 문제가 없어요"); return; }
+  const start = now() + READY_MS;
+  const game = {
+    status: "playing", mode: m.mode, order, penalty: Number(m.penalty) || 0,
+    timeLimit: m.timeLimit, target: m.target,
+    ...(m.mode === "attack"
+      ? { startAt: start, endAt: start + m.attackTime * 1000, attackTime: m.attackTime }
+      : { round: 0, phase: "question", roundStart: start }),
+  };
+  shownKey = null;
+  if (net === "solo") { room.game = game; render(); return; }
+  await fb.set(fb.r(`rooms/${roomCode}/game`), game);
 }
 
 async function backToLobby() {
   if (!isHost()) return;
-  if (mode === "solo") { room.game = { status: "lobby" }; render(); return; }
+  if (net === "solo") { room.game = { status: "lobby" }; render(); return; }
   await fb.set(fb.r(`rooms/${roomCode}/game`), { status: "lobby" });
 }
 
@@ -217,36 +268,54 @@ async function updateSetting(key, value) {
   if (!isHost()) return;
   const patch = { [key]: value };
   if (key === "difficulty") patch.timeLimit = DEFAULT_TIME[value];
-  if (mode === "solo") { Object.assign(room.meta, patch); render(); return; }
+  if (net === "solo") { Object.assign(room.meta, patch); render(); return; }
   await fb.update(fb.r(`rooms/${roomCode}/meta`), patch);
+}
+
+/* ---------------- 답 제출 ---------------- */
+function canAnswer(g) {
+  if (g?.status !== "playing") return false;
+  if (g.mode === "attack") return now() >= g.startAt && now() < g.endAt && !!currentProblem(g);
+  return g.phase === "question" && now() >= g.roundStart;
 }
 
 async function submitAnswer(e) {
   e.preventDefault();
   const g = room?.game;
-  if (!(g?.status === "playing" && g.phase === "question")) return;
-  if (now() < g.roundStart) return;
-  if (Date.now() < lockUntil) return feedback(`잠시 후 다시 제출할 수 있어요`, "warn");
-  const input = $("#answerInput");
-  const prob = PROBLEMS[room.meta.difficulty][g.order[g.round]];
-  const res = checkAnswer(input.value, prob.ans);
+  if (!canAnswer(g) || busy) return;
+  if (Date.now() < lockUntil) return feedback("잠시 후 다시 낼 수 있어요", "warn");
+  const prob = currentProblem(g);
+  const res = checkAnswer($("#answerInput").value, prob);
   if (res.error) return feedback(res.error, "warn");
   if (!res.correct) {
     lockUntil = Date.now() + LOCK_MS;
-    feedback("오답! 2초 후 다시 시도하세요", "bad");
+    feedback(g.penalty ? "틀렸어요. 1점 감점, 2초 뒤 다시 낼 수 있어요" : "틀렸어요. 2초 뒤 다시 낼 수 있어요", "bad");
     const form = $("#answerForm"); form.classList.remove("shake"); void form.offsetWidth; form.classList.add("shake");
+    if (g.penalty) await bump({ pen: g.penalty });
     return;
   }
-  const r = g.round;
-  feedback("정답! 확인 중…", "good");
-  const ng = await applyGame(T.win(r, myUid));
-  if (ng && ng.winner === myUid && ng.round === r) {
-    feedback("정답이에요", "good");
-    if (mode === "solo") { room.players.me.score++; render(); }
-    else await fb.update(fb.r(`rooms/${roomCode}/players/${myUid}`), { score: fb.increment(1) });
-  } else {
-    feedback("정답이지만 한 발 늦었어요!", "warn");
-  }
+  busy = true;
+  try {
+    if (g.mode === "attack") {
+      await bump({ prog: 1, solved: 1 });
+      toast("정답이에요");
+      return;
+    }
+    const r = g.round;
+    feedback("정답이에요. 확인 중…", "good");
+    const ng = await applyGame(T.win(r, myUid));
+    if (ng && ng.winner === myUid && ng.round === r) feedback("정답이에요", "good");
+    else feedback("정답이지만 한 발 늦었어요", "warn");
+  } finally { busy = false; }
+}
+
+async function skipProblem() {
+  const g = room?.game;
+  if (g?.mode !== "attack" || !canAnswer(g) || busy) return;
+  if (Date.now() < skipUntil) return;
+  busy = true;
+  skipUntil = Date.now() + SKIP_MS;
+  try { await bump({ prog: 1 }); } finally { busy = false; }
 }
 
 function feedback(msg, kind) { const f = $("#feedback"); f.textContent = msg; f.className = `feedback ${kind || ""}`; }
@@ -257,23 +326,26 @@ function schedule() {
   clearTimers();
   const g = room?.game;
   if (!g || g.status !== "playing") return;
-  const r = g.round;
-  const jitter = mode === "online" ? Math.random() * 400 : 0;
-  if (g.phase === "question") {
-    const limit = room.meta.timeLimit * 1000;
-    const t = g.roundStart + limit - now();
-    timers.push(setTimeout(() => applyGame(T.timeout(r, limit)), Math.max(0, t) + jitter));
-  } else if (g.phase === "reveal") {
-    const t = g.revealAt + REVEAL_MS - now();
-    timers.push(setTimeout(() => applyGame(T.advance(r)), Math.max(0, t) + jitter));
-  }
+  const jitter = net === "online" ? Math.random() * 400 : 0;
+  const at = (t, fn) => timers.push(setTimeout(fn, Math.max(0, t - now()) + jitter));
+  if (g.mode === "attack") at(g.endAt, () => applyGame(T.attackEnd()));
+  else if (g.phase === "question") at(g.roundStart + g.timeLimit * 1000, () => applyGame(T.timeout(g.round)));
+  else if (g.phase === "reveal") at(g.revealAt + REVEAL_MS, () => applyGame(T.advance(g.round)));
 }
 
 /* ---------------- 렌더링 ---------------- */
+const MODE_LABEL = { rounds: "문제 수 대결", race: "선착 점수", attack: "타임어택" };
+const MODE_DESC = {
+  rounds: "정해진 문제를 다 풀고 점수가 가장 높은 사람이 이겨요. 문제마다 먼저 맞힌 한 명만 1점.",
+  race: "목표 점수에 먼저 도달한 사람이 이겨요. 문제마다 먼저 맞힌 한 명만 1점.",
+  attack: "제한 시간 동안 각자 최대한 많이 풀어요. 막히면 넘길 수 있어요.",
+};
+const KIND_LABEL = { all: "전체", d: "정적분", i: "부정적분" };
+
 function render() {
   if (!room) { show("home"); return; }
   const me = room.players?.[myUid];
-  $("#meTag").textContent = me ? `${me.name}${mode === "solo" ? " (연습)" : ""}` : "";
+  $("#meTag").textContent = me ? `${me.name}${net === "solo" ? " (연습)" : ""}` : "";
   const st = room.game?.status || "lobby";
   if (st === "lobby") renderLobby();
   else if (st === "playing") renderGame();
@@ -282,39 +354,50 @@ function render() {
 }
 
 function playerName(p) {
-  const host = mode === "online" && p.uid === effectiveHost() ? '<span class="role">방장</span>' : "";
+  const host = net === "online" && p.uid === effectiveHost() ? '<span class="role">방장</span>' : "";
   const you = p.uid === myUid ? '<span class="role">나</span>' : "";
   const off = p.online === false ? '<span class="role off">나감</span>' : "";
   return `<span class="pen">${esc(p.name)}</span>${host}${you}${off}`;
 }
-function playerLi(p) { return `<li>${playerName(p)}</li>`; }
-// 답안 표기란: 라운드마다 동그라미 하나, 이긴 라운드는 칠해짐
-function sheetRow(p, g) {
-  const res = toObj(g.results);
-  const bubbles = g.order.map((_, i) => {
-    const cls = res[i] === p.uid ? "fill" : i === g.round && g.status === "playing" ? "now" : "";
-    return `<span class="bubble ${cls}">${i + 1}</span>`;
-  }).join("");
-  return `<li><div class="who">${playerName(p)}</div><div class="bubbles">${bubbles}</div><span class="tally pen">${p.score || 0}</span></li>`;
+
+// 답안 표기란 동그라미
+function bubblesFor(uid, g) {
+  const b = (n, cls) => `<span class="bubble ${cls}">${n}</span>`;
+  if (g.mode === "rounds") {
+    const res = toObj(g.results);
+    return g.order.map((_, i) => b(i + 1, res[i] === uid ? "fill" : i === g.round && g.status === "playing" ? "now" : "")).join("");
+  }
+  if (g.mode === "race") {
+    const s = Math.max(0, scoreOf(uid, g));
+    return Array.from({ length: g.target }, (_, i) => b(i + 1, i < s ? "fill" : "")).join("");
+  }
+  const solved = toObj(g.solved)[uid] || 0;
+  const shown = Math.min(solved, 24);
+  return Array.from({ length: shown }, (_, i) => b(i + 1, "fill")).join("") + (solved > shown ? `<span class="more">+${solved - shown}</span>` : "");
 }
 
 function renderLobby() {
   show("lobby");
   shownKey = null;
-  const solo = mode === "solo";
+  const solo = net === "solo";
   $("#lobbyLabel").textContent = solo ? "연습 모드" : "방 코드";
   $("#roomCode").innerHTML = solo ? '<span class="solo-mark pen">혼자 연습</span>' : [...roomCode].map((c) => `<span>${c}</span>`).join("");
   $("#copyBtn").classList.toggle("hidden", solo);
   const host = isHost();
-  const m = room.meta;
-  for (const [id, v] of [["#setDiff", m.difficulty], ["#setRounds", m.totalRounds], ["#setTime", m.timeLimit]]) {
-    const el = $(id); el.value = String(v); el.disabled = !host;
-  }
+  const m = { ...DEFAULT_META, ...room.meta };
+  const fields = [["#setMode", m.mode], ["#setDiff", m.difficulty], ["#setKind", m.kind], ["#setRounds", m.totalRounds],
+    ["#setTarget", m.target], ["#setAttack", m.attackTime], ["#setTime", m.timeLimit], ["#setPenalty", Number(m.penalty) || 0]];
+  for (const [id, v] of fields) { const el = $(id); el.value = String(v); el.disabled = !host; }
+  $("#cellRounds").classList.toggle("hidden", m.mode !== "rounds");
+  $("#cellTarget").classList.toggle("hidden", m.mode !== "race");
+  $("#cellAttack").classList.toggle("hidden", m.mode !== "attack");
+  $("#cellTime").classList.toggle("hidden", m.mode === "attack");
+  $("#modeDesc").textContent = MODE_DESC[m.mode];
   const ps = playersArr();
   $("#playerCount").textContent = solo ? "" : `${ps.length}/${MAX_PLAYERS}`;
-  $("#lobbyPlayers").innerHTML = ps.map((p) => playerLi(p)).join("");
+  $("#lobbyPlayers").innerHTML = ps.map((p) => `<li>${playerName(p)}</li>`).join("");
   $("#startBtn").classList.toggle("hidden", !host);
-  const msg = $("#lobbyMsg"); msg.classList.add("info");
+  const msg = $("#lobbyMsg");
   if (solo) msg.textContent = "";
   else if (!host) msg.textContent = "방장이 게임을 시작하길 기다리는 중…";
   else if (ps.length < 2) msg.textContent = "초대 링크를 보내면 친구가 바로 들어와요";
@@ -323,27 +406,40 @@ function renderLobby() {
 
 function renderGame() {
   show("game");
-  const g = room.game, m = room.meta;
-  const prob = PROBLEMS[m.difficulty][g.order[g.round]];
-  const key = `${g.round}:${g.order[g.round]}:${g.roundStart}`;
+  const g = room.game;
+  const attack = g.mode === "attack";
+  const prob = currentProblem(g);
+  const idx = attack ? myIndex(g) : g.round;
+  const key = `${g.mode}:${idx}:${prob?.id}:${attack ? g.startAt : g.roundStart}`;
+
   const badge = $("#diffBadge");
-  badge.textContent = DIFFICULTY_LABEL[m.difficulty]; badge.className = `badge ${m.difficulty}`;
-  $("#roundLabel").textContent = `문제 ${g.round + 1} / ${g.order.length}`;
+  badge.textContent = prob ? DIFFICULTY_LABEL[prob.diff] : "";
+  badge.className = `badge ${prob?.diff || ""}`;
+  $("#typeTag").textContent = prob?.type === "i" ? "부정적분: x에 대한 식으로 답해요" : "";
+  $("#roundLabel").textContent =
+    g.mode === "rounds" ? `문제 ${g.round + 1} / ${g.order.length}`
+    : g.mode === "race" ? `문제 ${g.round + 1}, ${g.target}점 먼저 내면 승리`
+    : `${toObj(g.solved)[myUid] || 0}문제 풀었어요`;
 
   if (key !== shownKey) {
     shownKey = key;
-    tex($("#problem"), prob.tex);
-    $("#answerInput").value = ""; $("#preview").innerHTML = ""; feedback("");
-    lockUntil = 0;
+    if (prob) tex($("#problem"), prob.tex);
+    else $("#problem").textContent = "준비된 문제를 모두 풀었어요. 시간이 끝나길 기다려요.";
+    const input = $("#answerInput");
+    input.value = ""; $("#preview").innerHTML = "";
+    input.placeholder = prob?.type === "i" ? "x^3/3, xe^x … (+C는 안 적어도 돼요)" : "pi/4, ln2, e-1 …";
+    if (!attack) { feedback(""); lockUntil = 0; }
   }
 
-  const ps = playersArr().sort((a, b) => (b.score || 0) - (a.score || 0));
-  $("#scoreList").innerHTML = ps.map((p) => sheetRow(p, g)).join("");
+  const ps = playersArr().sort((a, b) => scoreOf(b.uid, g) - scoreOf(a.uid, g));
+  $("#scoreList").innerHTML = ps.map((p) =>
+    `<li><div class="who">${playerName(p)}</div><div class="bubbles">${bubblesFor(p.uid, g)}</div><span class="tally pen">${scoreOf(p.uid, g)}</span></li>`).join("");
 
-  const reveal = g.phase === "reveal";
+  const reveal = !attack && g.phase === "reveal";
   $("#reveal").classList.toggle("hidden", !reveal);
-  $("#answerInput").disabled = reveal;
-  $("#submitBtn").disabled = reveal;
+  $("#skipBtn").classList.toggle("hidden", !attack);
+  $("#answerInput").disabled = reveal || !prob;
+  $("#submitBtn").disabled = reveal || !prob;
   if (reveal) {
     const w = g.winner && room.players[g.winner];
     $("#reveal").classList.toggle("won", !!g.winner);
@@ -352,6 +448,7 @@ function renderGame() {
       ? (g.winner === myUid ? "정답, 1점 획득" : `${w?.name || "?"} 님이 먼저 풀었어요`)
       : "시간 종료, 아무도 못 풀었어요";
     tex($("#revealAns"), prob.ansTex);
+    $("#revealCat").textContent = `${prob.cat} 문제`;
   }
   tick();
 }
@@ -359,42 +456,46 @@ function renderGame() {
 function renderResult() {
   show("result");
   shownKey = null;
-  const ps = playersArr().sort((a, b) => (b.score || 0) - (a.score || 0));
-  const total = room.game.order?.length || 0;
+  const g = room.game;
+  const ps = playersArr().sort((a, b) => scoreOf(b.uid, g) - scoreOf(a.uid, g));
   $("#ranking").innerHTML = ps.map((p) => {
-    const rank = ps.findIndex((q) => (q.score || 0) === (p.score || 0));
-    return `<li class="${rank === 0 ? "first" : ""}"><span class="rank pen">${rank + 1}등</span><div class="who">${playerName(p)}</div><div class="bubbles">${room.game.order.map((_, i) => `<span class="bubble ${toObj(room.game.results)[i] === p.uid ? "fill" : ""}">${i + 1}</span>`).join("")}</div><span class="grade pen">${p.score || 0}/${total}</span></li>`;
+    const s = scoreOf(p.uid, g);
+    const rank = ps.findIndex((q) => scoreOf(q.uid, g) === s);
+    return `<li class="${rank === 0 ? "first" : ""}"><span class="rank pen">${rank + 1}등</span><div class="who">${playerName(p)}</div><div class="bubbles">${bubblesFor(p.uid, g)}</div><span class="grade pen">${s}점</span></li>`;
   }).join("");
-  const top = ps[0], tie = ps.length > 1 && (ps[1].score || 0) === (top?.score || 0);
-  $("#resultTitle").textContent = mode === "solo"
-    ? `${total}문제 중 ${top?.score || 0}문제 맞힘`
+  const top = ps[0], topScore = top ? scoreOf(top.uid, g) : 0;
+  const tie = ps.length > 1 && scoreOf(ps[1].uid, g) === topScore;
+  $("#resultTitle").textContent = net === "solo"
+    ? (g.mode === "attack" ? `${g.attackTime / 60}분 동안 ${toObj(g.solved).me || 0}문제 풀었어요` : `${topScore}점`)
     : tie ? "무승부" : top?.uid === myUid ? "내가 이겼어요" : `${top?.name} 님이 이겼어요`;
+  $("#resultMode").textContent = `${MODE_LABEL[g.mode] || ""}${g.penalty ? ", 오답 감점" : ""}`;
   const host = isHost();
   $("#againBtn").classList.toggle("hidden", !host);
-  $("#toLobbyBtn").classList.toggle("hidden", !host || mode === "solo");
-  const msg = $("#resultMsg"); msg.classList.add("info");
-  msg.textContent = host ? "" : "방장이 다음 게임을 준비하는 중…";
+  $("#toLobbyBtn").classList.toggle("hidden", !host);
+  $("#resultMsg").textContent = host ? "" : "방장이 다음 게임을 준비하는 중…";
 }
 
 // 0.1초마다 시계/카운트다운 갱신
 function tick() {
   const g = room?.game;
   if (!g || g.status !== "playing" || $("#game").classList.contains("hidden")) return;
-  const limit = room.meta.timeLimit * 1000;
   const t = now();
-  const ready = g.phase === "question" && t < g.roundStart;
+  const attack = g.mode === "attack";
+  const start = attack ? g.startAt : g.roundStart;
+  const limit = (attack ? g.attackTime : g.timeLimit) * 1000;
+  const ready = (attack || g.phase === "question") && t < start;
   $("#readyOverlay").classList.toggle("hidden", !ready);
-  if (ready) $("#readyCount").textContent = Math.ceil((g.roundStart - t) / 1000);
-  let left = g.phase === "question" ? Math.min(limit, Math.max(0, g.roundStart + limit - t)) : 0;
-  if (g.phase === "reveal") {
+  if (ready) $("#readyCount").textContent = Math.ceil((start - t) / 1000);
+  let left = Math.min(limit, Math.max(0, start + limit - t));
+  if (!attack && g.phase === "reveal") {
     left = 0;
     const n = Math.max(0, Math.ceil((g.revealAt + REVEAL_MS - t) / 1000));
-    $("#revealNext").textContent = g.round + 1 >= g.order.length ? `결과 발표까지 ${n}초` : `다음 문제까지 ${n}초`;
+    $("#revealNext").textContent = `${n}초 뒤 다음으로 넘어가요`;
   }
   const sec = Math.ceil(left / 1000);
   const clock = $("#clock");
   clock.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
-  clock.classList.toggle("low", g.phase === "question" && !ready && sec <= 10);
+  clock.classList.toggle("low", !ready && left > 0 && sec <= 10);
   $("#timeBar").style.width = `${(left / limit) * 100}%`;
 }
 setInterval(tick, 100);
@@ -411,19 +512,26 @@ function wire() {
   $("#startBtn").onclick = startGame;
   $("#againBtn").onclick = startGame;
   $("#toLobbyBtn").onclick = backToLobby;
+  $("#skipBtn").onclick = skipProblem;
   $("#copyBtn").onclick = async () => {
     const url = `${location.origin}${location.pathname}?room=${roomCode}`;
     try { await navigator.clipboard.writeText(url); toast("초대 링크를 복사했어요"); }
     catch { prompt("이 링크를 친구에게 보내세요", url); }
   };
-  $("#setDiff").onchange = (e) => updateSetting("difficulty", e.target.value);
-  $("#setRounds").onchange = (e) => updateSetting("totalRounds", Number(e.target.value));
-  $("#setTime").onchange = (e) => updateSetting("timeLimit", Number(e.target.value));
+  const setting = (id, key, num) => { $(id).onchange = (e) => updateSetting(key, num ? Number(e.target.value) : e.target.value); };
+  setting("#setMode", "mode");
+  setting("#setDiff", "difficulty");
+  setting("#setKind", "kind");
+  setting("#setRounds", "totalRounds", true);
+  setting("#setTarget", "target", true);
+  setting("#setAttack", "attackTime", true);
+  setting("#setTime", "timeLimit", true);
+  setting("#setPenalty", "penalty", true);
   $("#answerForm").addEventListener("submit", submitAnswer);
   $("#answerInput").addEventListener("input", (e) => {
     const v = e.target.value; const pv = $("#preview");
-    if (!v.trim()) { pv.innerHTML = ""; return; }
-    const r = evaluate(v);
+    if (!v.trim() || !room?.game?.order) { pv.innerHTML = ""; return; }
+    const r = previewAnswer(v, currentProblem());
     if (r.error) pv.textContent = "…"; else tex(pv, r.tex, false);
   });
 
