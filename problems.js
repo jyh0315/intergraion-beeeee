@@ -106,7 +106,130 @@ function build(d, row, i) {
 export const PROBLEMS = Object.fromEntries(
   Object.entries(RAW).map(([d, rows]) => [d, rows.map((r, i) => build(d, r, i))])
 );
-export const getProblem = (id) => { const [d, i] = String(id).split(":"); return PROBLEMS[d]?.[Number(i)]; };
+/* ---------------- 숫자 랜덤 변형 문제 ----------------
+   같은 시드면 모두에게 같은 문제가 나옴. id 형식: "g:템플릿:시드" */
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const ri = (r, lo, hi) => lo + Math.floor(r() * (hi - lo + 1));
+const gcd = (a, b) => (b ? gcd(b, a % b) : Math.abs(a));
+const fact = (n) => (n <= 1 ? 1 : n * fact(n - 1));
+// 기약분수: s = math.js 식, t = LaTeX
+function fr(p, q = 1) {
+  if (q < 0) { p = -p; q = -q; }
+  const g = gcd(p, q) || 1; p /= g; q /= g;
+  const neg = p < 0 ? "-" : "", ap = Math.abs(p);
+  return { p, q, s: q === 1 ? `${p}` : `${p}/${q}`, t: q === 1 ? `${p}` : `${neg}\\frac{${ap}}{${q}}` };
+}
+// 계수 표기: 1 → "", 분수 → \frac{}{}
+const co = (f) => (f.p === f.q ? "" : f.t);
+const cn = (n) => (n === 1 ? "" : `${n}`);
+const pw = (n) => (n === 1 ? "" : `^{${n}}`);
+const piOver = (n) => (n === 1 ? "\\pi" : `\\frac{\\pi}{${n}}`);
+const piOverS = (n) => (n === 1 ? "pi" : `pi/${n}`);
+const lnFrac = (num, den) => { const g = gcd(num, den); num /= g; den /= g;
+  return den === 1 ? { s: `ln(${num})`, t: `\\ln ${num}` } : { s: `ln(${num}/${den})`, t: `\\ln\\frac{${num}}{${den}}` }; };
+
+const TEMPLATES = {
+  // ---- 쉬움 ----
+  E1: ["easy", "d", "기본", (r) => { const c = ri(r, 1, 5), d = ri(r, 1, 6), b = ri(r, 1, 3), A = fr(2 * c * b ** 3 + 3 * d * b * b, 6);
+    return { tex: `\\int_0^{${b}} (${cn(c)}x^2+${cn(d)}x)\\,dx`, f: `${c}x^2+${d}x`, a: "0", b: `${b}`, ans: A.s, ansTex: A.t }; }],
+  E2: ["easy", "d", "기본", (r) => { const n = ri(r, 2, 5), b = ri(r, 2, 3), A = fr(b ** (n + 1), n + 1);
+    return { tex: `\\int_0^{${b}} x^{${n}}\\,dx`, f: `x^${n}`, a: "0", b: `${b}`, ans: A.s, ansTex: A.t }; }],
+  E3: ["easy", "d", "지수·로그", (r) => { const k = ri(r, 2, 4), m = ri(r, 1, 3), A = fr(k ** m - 1, m);
+    return { tex: `\\int_0^{\\ln ${k}} e^{${cn(m)}x}\\,dx`, f: `exp(${m}x)`, a: "0", b: `log(${k})`, ans: A.s, ansTex: A.t }; }],
+  E4: ["easy", "d", "삼각함수", (r) => { const m = ri(r, 2, 6);
+    if (r() < 0.5) { const A = fr(2, m); return { tex: `\\int_0^{${piOver(m)}} \\sin ${m}x\\,dx`, f: `sin(${m}x)`, a: "0", b: piOverS(m), ans: A.s, ansTex: A.t }; }
+    const A = fr(1, m); return { tex: `\\int_0^{${piOver(2 * m)}} \\cos ${m}x\\,dx`, f: `cos(${m}x)`, a: "0", b: piOverS(2 * m), ans: A.s, ansTex: A.t }; }],
+  E5: ["easy", "d", "지수·로그", (r) => { const c = ri(r, 1, 5), k = ri(r, 2, 9);
+    return { tex: `\\int_1^{${k}} \\frac{${c}}{x}\\,dx`, f: `${c}/x`, a: "1", b: `${k}`, ans: `${c}*ln(${k})`, ansTex: `${cn(c)}\\ln ${k}` }; }],
+  E6: ["easy", "d", "역삼각함수", (r) => { const b = ri(r, 1, 5);
+    return { tex: `\\int_0^{${b}} \\frac{1}{x^2+${b * b}}\\,dx`, f: `1/(x^2+${b * b})`, a: "0", b: `${b}`, ans: piOverS(4 * b), ansTex: piOver(4 * b) }; }],
+  E7: ["easy", "i", "기본", (r) => { const n = ri(r, 1, 6), a = ri(r, 1, 9), A = fr(a, n + 1);
+    return { tex: `\\int ${cn(a)}x${pw(n)}\\,dx`, f: `${a}x^${n}`, ans: `${A.s}*x^${n + 1}`, ansTex: `${co(A)}x^{${n + 1}}`, dom: [-2, 2] }; }],
+  E8: ["easy", "i", "지수·로그", (r) => { const c = ri(r, 1, 6), m = ri(r, 2, 5), A = fr(c, m);
+    return { tex: `\\int ${cn(c)}e^{${m}x}\\,dx`, f: `${c}exp(${m}x)`, ans: `${A.s}*exp(${m}x)`, ansTex: `${co(A)}e^{${m}x}`, dom: [-1, 1] }; }],
+  E9: ["easy", "i", "삼각함수", (r) => { const m = ri(r, 2, 7);
+    return r() < 0.5
+      ? { tex: `\\int \\cos ${m}x\\,dx`, f: `cos(${m}x)`, ans: `sin(${m}x)/${m}`, ansTex: `\\frac{\\sin ${m}x}{${m}}`, dom: [-2, 2] }
+      : { tex: `\\int \\sin ${m}x\\,dx`, f: `sin(${m}x)`, ans: `-cos(${m}x)/${m}`, ansTex: `-\\frac{\\cos ${m}x}{${m}}`, dom: [-2, 2] }; }],
+  // ---- 보통 ----
+  N1: ["normal", "부분적분", "d", (r) => { const m = ri(r, 2, 4);
+    return { tex: `\\int_0^1 x e^{${m}x}\\,dx`, f: `x*exp(${m}x)`, a: "0", b: "1", ans: `(${m - 1}*e^${m}+1)/${m * m}`, ansTex: `\\frac{${cn(m - 1)}e^{${m}}+1}{${m * m}}` }; }],
+  N2: ["normal", "부분적분", "d", (r) => { const m = ri(r, 1, 5);
+    return { tex: `\\int_0^{${piOver(m)}} x\\sin ${cn(m)}x\\,dx`, f: `x*sin(${m}x)`, a: "0", b: piOverS(m), ans: piOverS(m * m), ansTex: piOver(m * m) }; }],
+  N3: ["normal", "치환", "d", (r) => { const b = ri(r, 1, 4), c = ri(r, 1, 5), L = lnFrac(b * b + c, c);
+    return { tex: `\\int_0^{${b}} \\frac{x}{x^2+${c}}\\,dx`, f: `x/(x^2+${c})`, a: "0", b: `${b}`, ans: `${L.s}/2`, ansTex: `\\frac12${L.t}` }; }],
+  N4: ["normal", "부분분수", "d", (r) => { const p = ri(r, 1, 4), q = p + ri(r, 1, 3), L = lnFrac((1 + p) * q, (1 + q) * p), d = q - p;
+    return { tex: `\\int_0^1 \\frac{1}{(x+${p})(x+${q})}\\,dx`, f: `1/((x+${p})*(x+${q}))`, a: "0", b: "1", ans: `${L.s}/${d}`, ansTex: `${d === 1 ? "" : `\\frac{1}{${d}}`}${L.t}` }; }],
+  N5: ["normal", "삼각함수", "d", (r) => { const m = ri(r, 1, 5);
+    return { tex: `\\int_0^{${piOver(2 * m)}} \\sin^2 ${cn(m)}x\\,dx`, f: `sin(${m}x)^2`, a: "0", b: piOverS(2 * m), ans: piOverS(4 * m), ansTex: piOver(4 * m) }; }],
+  N6: ["normal", "이상적분", "d", (r) => { const n = ri(r, 1, 3), m = ri(r, 1, 3), A = fr(fact(n), m ** (n + 1));
+    return { tex: `\\int_0^{\\infty} x${pw(n)} e^{-${cn(m)}x}\\,dx`, f: `x^${n}*exp(-${m}x)`, a: "0", b: "inf", ans: A.s, ansTex: A.t }; }],
+  N7: ["normal", "부분적분", "i", (r) => { const m = ri(r, 2, 4);
+    return { tex: `\\int x e^{${m}x}\\,dx`, f: `x*exp(${m}x)`, ans: `exp(${m}x)*(x/${m}-1/${m * m})`, ansTex: `e^{${m}x}\\left(\\frac{x}{${m}}-\\frac{1}{${m * m}}\\right)`, dom: [-1, 1] }; }],
+  N8: ["normal", "치환", "i", (r) => { const n = ri(r, 1, 4), c = ri(r, 1, 5);
+    return { tex: `\\int x(x^2+${c})${pw(n)}\\,dx`, f: `x*(x^2+${c})^${n}`, ans: `(x^2+${c})^${n + 1}/${2 * (n + 1)}`, ansTex: `\\frac{(x^2+${c})^{${n + 1}}}{${2 * (n + 1)}}`, dom: [-2, 2] }; }],
+  N9: ["normal", "부분적분", "i", (r) => { const n = ri(r, 1, 4), k = n + 1;
+    return { tex: `\\int x${pw(n)}\\ln x\\,dx`, f: `x^${n}*log(x)`, ans: `x^${k}*(ln(x)/${k}-1/${k * k})`, ansTex: `x^{${k}}\\left(\\frac{\\ln x}{${k}}-\\frac{1}{${k * k}}\\right)`, dom: [0.5, 3] }; }],
+  N10: ["normal", "부분적분", "d", (r) => { const m = ri(r, 1, 6), A = fr(-1, (m + 1) ** 2);
+    return { tex: `\\int_0^1 x${pw(m)}\\ln x\\,dx`, f: `x^${m}*log(x)`, a: "0", b: "1", ans: A.s, ansTex: A.t }; }],
+  // ---- 어려움 ----
+  H1: ["hard", "대칭", "d", (r) => { const a = ri(r, 2, 12);
+    return r() < 0.5
+      ? { tex: `\\int_0^{\\pi/2} \\frac{\\sin^{${a}}x}{\\sin^{${a}}x+\\cos^{${a}}x}\\,dx`, f: `sin(x)^${a}/(sin(x)^${a}+cos(x)^${a})`, a: "0", b: "pi/2", ans: "pi/4", ansTex: "\\frac{\\pi}{4}" }
+      : { tex: `\\int_0^{\\pi/2} \\frac{1}{1+\\tan^{${a}}x}\\,dx`, f: `1/(1+tan(x)^${a})`, a: "0", b: "pi/2", ans: "pi/4", ansTex: "\\frac{\\pi}{4}" }; }],
+  H2: ["hard", "대칭", "d", (r) => { const c = ri(r, 2, 5), k = ri(r, 1, 2), b = ri(r, 1, 2), A = fr(b ** (2 * k + 1), 2 * k + 1);
+    return { tex: `\\int_{-${b}}^{${b}} \\frac{x^{${2 * k}}}{1+${c}^x}\\,dx`, f: `x^${2 * k}/(1+${c}^x)`, a: `-${b}`, b: `${b}`, ans: A.s, ansTex: A.t }; }],
+  H3: ["hard", "급수", "d", (r) => { const n = r() < 0.5 ? 1 : 3, m = ri(r, 1, 3), d = n === 1 ? 6 * m * m : 15 * m ** 4, e = n + 1;
+    return { tex: `\\int_0^{\\infty} \\frac{x${pw(n)}}{e^{${cn(m)}x}-1}\\,dx`, f: `x^${n}/(exp(${m}x)-1)`, a: "0", b: "inf", ans: `pi^${e}/${d}`, ansTex: `\\frac{\\pi^{${e}}}{${d}}` }; }],
+  H4: ["hard", "유리함수", "d", (r) => { const a = ri(r, 1, 3), b = a + ri(r, 1, 3), d = 2 * a * b * (a + b);
+    return { tex: `\\int_0^{\\infty} \\frac{dx}{(x^2+${a * a})(x^2+${b * b})}`, f: `1/((x^2+${a * a})*(x^2+${b * b}))`, a: "0", b: "inf", ans: `pi/${d}`, ansTex: `\\frac{\\pi}{${d}}` }; }],
+  H5: ["hard", "삼각함수", "d", (r) => { const b = ri(r, 1, 4), a = b + ri(r, 1, 3), D = a * a - b * b, s = Math.round(Math.sqrt(D));
+    const sq = s * s === D;
+    return { tex: `\\int_0^{2\\pi} \\frac{dx}{${a}+${cn(b)}\\cos x}`, f: `1/(${a}+${b}cos(x))`, a: "0", b: "2pi",
+      ans: sq ? `2pi/${s}` : `2pi/sqrt(${D})`, ansTex: sq ? (s === 2 ? "\\pi" : s === 1 ? "2\\pi" : `\\frac{2\\pi}{${s}}`) : `\\frac{2\\pi}{\\sqrt{${D}}}` }; }],
+  H6: ["hard", "특수", "d", (r) => { const a = ri(r, 2, 9);
+    return { tex: `\\int_0^{\\infty} e^{-${a}x^2}\\,dx`, f: `exp(-${a}x^2)`, a: "0", b: "inf", ans: `sqrt(pi/${a})/2`, ansTex: `\\frac12\\sqrt{\\frac{\\pi}{${a}}}` }; }],
+  H7: ["hard", "특수", "d", (r) => { const a = ri(r, 2, 9);
+    return { tex: `\\int_0^1 \\frac{x^{${a}}-1}{\\ln x}\\,dx`, f: `(x^${a}-1)/log(x)`, a: "0", b: "1", ans: `ln(${a + 1})`, ansTex: `\\ln ${a + 1}` }; }],
+  H8: ["hard", "특수", "d", (r) => { const a = ri(r, 3, 9), L = lnFrac(a, 2);
+    return { tex: `\\int_0^{\\pi/2} \\ln(${a}\\sin x)\\,dx`, f: `log(${a}sin(x))`, a: "0", b: "pi/2", ans: `pi/2*${L.s}`, ansTex: `\\frac{\\pi}{2}${L.t}` }; }],
+  H9: ["hard", "부분적분", "i", (r) => { const a = ri(r, 1, 3), b = ri(r, 1, 3), d = a * a + b * b;
+    return { tex: `\\int e^{${cn(a)}x}\\sin ${cn(b)}x\\,dx`, f: `exp(${a}x)*sin(${b}x)`, ans: `exp(${a}x)*(${a}sin(${b}x)-${b}cos(${b}x))/${d}`,
+      ansTex: `\\frac{e^{${cn(a)}x}(${cn(a)}\\sin ${cn(b)}x-${cn(b)}\\cos ${cn(b)}x)}{${d}}`, dom: [-1, 1] }; }],
+};
+
+export const TEMPLATE_IDS = Object.keys(TEMPLATES);
+const cache = new Map();
+function generate(tpl, seed) {
+  const t = TEMPLATES[tpl]; if (!t) return null;
+  // [난이도, 유형, 분류] 순서가 섞여 있어도 되게 정리
+  const diff = t[0], type = ["d", "i"].includes(t[1]) ? t[1] : t[2], cat = ["d", "i"].includes(t[1]) ? t[2] : t[1];
+  const p = t[3](rng(Number(seed)));
+  return { id: `g:${tpl}:${seed}`, diff, type, cat, gen: true, ...p, ansTex: type === "i" ? `${p.ansTex}+C` : p.ansTex };
+}
+export function templateInfo(tpl) {
+  const t = TEMPLATES[tpl];
+  return { diff: t[0], type: ["d", "i"].includes(t[1]) ? t[1] : t[2] };
+}
+export const newSeed = () => Math.floor(Math.random() * 2 ** 31);
+
+export const getProblem = (id) => {
+  id = String(id);
+  if (cache.has(id)) return cache.get(id);
+  let p;
+  if (id.startsWith("g:")) { const [, tpl, seed] = id.split(":"); p = generate(tpl, seed); }
+  else { const [d, i] = id.split(":"); p = PROBLEMS[d]?.[Number(i)]; }
+  if (p) cache.set(id, p);
+  return p;
+};
 
 export const DIFFICULTY_LABEL = { easy: "쉬움", normal: "보통", hard: "어려움", mixed: "섞어서" };
 export const DEFAULT_TIME = { easy: 60, normal: 120, hard: 180, mixed: 120 };

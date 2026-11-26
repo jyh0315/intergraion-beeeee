@@ -61,6 +61,7 @@
           <li>0.7854 같은 소수 근삿값은 인정하지 않아요.</li>
           <li>부정적분은 x에 대한 식으로 적어요: <kbd>x^3/3</kbd> <kbd>xe^x - e^x</kbd> <kbd>ln(x^2+1)/2</kbd>. +C는 적어도 되고 안 적어도 돼요.</li>
           <li>틀리면 2초 동안 다시 낼 수 없어요.</li>
+          <li>막히면 넘기기를 눌러요. 여럿이 할 때는 모두 누르면 다음 문제로 넘어가요.</li>
         </ul>
       </details>
     </section>
@@ -95,6 +96,13 @@
             <option value="normal">보통</option>
             <option value="hard">어려움</option>
             <option value="mixed">섞어서 (쉬움→어려움)</option>
+          </select>
+        </label>
+        <label class="cell"><span class="key">출제 방식</span>
+          <select id="setSource" class="ink">
+            <option value="mix">기본 문제 + 숫자 랜덤</option>
+            <option value="gen">숫자 랜덤만</option>
+            <option value="fixed">기본 문제만</option>
           </select>
         </label>
         <label class="cell"><span class="key">문제 종류</span>
@@ -191,7 +199,7 @@
             <input id="answerInput" class="ink" placeholder="pi/4, ln2, e-1 …" spellcheck="false" />
           </label>
           <button class="btn primary" id="submitBtn">제출</button>
-          <button class="btn skip hidden" id="skipBtn" type="button">넘기기</button>
+          <button class="btn skip" id="skipBtn" type="button">넘기기</button>
         </div>
         <div class="preview" id="preview" aria-live="polite"></div>
         <div class="feedback" id="feedback" role="status"></div>

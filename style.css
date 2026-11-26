@@ -269,7 +269,9 @@ kbd { font: 500 14px "IBM Plex Mono", monospace; color: var(--pen); background: 
   .join { flex-wrap: wrap; }
   .join .cell { flex: 1 1 100%; }
   .join .btn { flex: 1 1 100%; border-left: 0; border-top: 1.5px solid var(--red); }
-  .answer .btn { padding: 0 18px; }
+  .answer .form { flex-wrap: wrap; }
+  .answer .cell { flex: 1 1 100%; }
+  .answer .btn { flex: 1; padding: 14px; border-top: 2px solid var(--red); }
   .settings .cell { flex: 1 1 100%; flex-direction: row; border-left: 0; margin-left: 0; border-top: 1.5px solid var(--red); margin-top: -1.5px; }
   .settings .key { border-bottom: 0; border-right: 1.5px solid var(--red); padding: 0 10px; }
 }

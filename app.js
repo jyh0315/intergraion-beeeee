@@ -1,4 +1,4 @@
-import { PROBLEMS, getProblem, DIFFICULTY_LABEL, DEFAULT_TIME } from "./problems.js";
+import { PROBLEMS, getProblem, TEMPLATE_IDS, templateInfo, newSeed, DIFFICULTY_LABEL, DEFAULT_TIME } from "./problems.js";
 import { checkAnswer, previewAnswer } from "./check.js";
 
 const $ = (s) => document.querySelector(s);
@@ -22,7 +22,7 @@ let lockUntil = 0;
 let busy = false;
 let skipUntil = 0;
 
-const DEFAULT_META = { mode: "rounds", difficulty: "normal", kind: "all", totalRounds: 5, target: 3, attackTime: 180, timeLimit: DEFAULT_TIME.normal, penalty: 0 };
+const DEFAULT_META = { mode: "rounds", difficulty: "normal", kind: "all", totalRounds: 5, target: 3, attackTime: 180, timeLimit: DEFAULT_TIME.normal, penalty: 0, source: "mix" };
 
 const now = () => Date.now() + serverOffset;
 
@@ -192,7 +192,15 @@ const T = {
     const winners = new Set(Object.values(toObj(g.results)));
     const reached = g.mode === "race" && [...winners].some((uid) => scoreOf(uid, g) >= g.target);
     if (reached || r + 1 >= g.order.length) return { ...g, status: "finished", phase: "done" };
-    return { ...g, round: r + 1, phase: "question", winner: null, revealAt: null, roundStart: now() + READY_MS };
+    return { ...g, round: r + 1, phase: "question", winner: null, revealAt: null, skips: null, skipped: null, roundStart: now() + READY_MS };
+  },
+  // 넘기기 투표: 접속 중인 모두가 누르면 정답 공개 후 다음 문제로
+  skipVote: (r, uid, need) => (g) => {
+    if (!(g.status === "playing" && g.round === r && g.phase === "question")) return null;
+    const skips = { ...toObj(g.skips), [uid]: true };
+    if (Object.keys(skips).length >= need)
+      return { ...g, skips, phase: "reveal", winner: null, skipped: true, revealAt: now(), results: { ...toObj(g.results), [r]: "-" } };
+    return { ...g, skips };
   },
   attackEnd: () => (g) =>
     g.status === "playing" && g.mode === "attack" && now() >= g.endAt - 300 ? { ...g, status: "finished" } : null,
@@ -225,19 +233,47 @@ async function bump(bumps) {
 }
 
 /* ---------------- 게임 시작 ---------------- */
-function poolOf(diff, kind) {
-  return PROBLEMS[diff].filter((p) => kind === "all" || p.type === kind).map((p) => p.id);
+// source: mix = 고정 + 숫자 랜덤, gen = 숫자 랜덤만, fixed = 고정 문제만
+function poolOf(diff, kind, source, perTemplate) {
+  const ok = (type) => kind === "all" || type === kind;
+  const fixed = source === "gen" ? [] : PROBLEMS[diff].filter((p) => ok(p.type)).map((p) => p.id);
+  const gen = [];
+  if (source !== "fixed") {
+    for (const t of TEMPLATE_IDS) {
+      const info = templateInfo(t);
+      if (info.diff !== diff || !ok(info.type)) continue;
+      const seenTex = new Set();
+      for (let k = 0; k < perTemplate * 3 && seenTex.size < perTemplate; k++) {
+        const id = `g:${t}:${newSeed()}`, tex = getProblem(id).tex;
+        if (!seenTex.has(tex)) { seenTex.add(tex); gen.push(id); }
+      }
+    }
+  }
+  return [...fixed, ...gen];
 }
+// 같은 템플릿 변형이 연달아 나오지 않게 섞기
+function spread(ids) {
+  const out = [], rest = [...ids];
+  while (rest.length) {
+    const prev = out.length ? tplOf(out[out.length - 1]) : null;
+    const i = rest.findIndex((id) => !prev || tplOf(id) !== prev);
+    out.push(rest.splice(i < 0 ? 0 : i, 1)[0]);
+  }
+  return out;
+}
+const tplOf = (id) => (id.startsWith("g:") ? id.split(":")[1] : id);
 function buildOrder(m) {
   const diffs = m.difficulty === "mixed" ? ["easy", "normal", "hard"] : [m.difficulty];
-  const groups = diffs.map((d) => shuffle(poolOf(d, m.kind)));
+  const source = m.source || "mix";
+  const per = m.mode === "rounds" ? 2 : 4; // 템플릿마다 만들 변형 수
+  const groups = diffs.map((d) => spread(shuffle(poolOf(d, m.kind, source, per))));
   if (m.mode === "rounds") {
     if (groups.length === 1) return groups[0].slice(0, m.totalRounds);
     const n = m.totalRounds, e = Math.ceil(n / 3), h = Math.floor(n / 3);
     return [...groups[0].slice(0, e), ...groups[1].slice(0, n - e - h), ...groups[2].slice(0, h)];
   }
   if (m.mode === "attack") return groups.flat(); // 쉬운 것부터
-  return shuffle(groups.flat());
+  return spread(shuffle(groups.flat()));
 }
 
 async function startGame() {
@@ -309,9 +345,17 @@ async function submitAnswer(e) {
   } finally { busy = false; }
 }
 
+const onlineCount = () => playersArr().filter((p) => p.online !== false).length || 1;
+
 async function skipProblem() {
   const g = room?.game;
-  if (g?.mode !== "attack" || !canAnswer(g) || busy) return;
+  if (!canAnswer(g) || busy) return;
+  if (g.mode !== "attack") {
+    if (toObj(g.skips)[myUid]) return;
+    busy = true;
+    try { await applyGame(T.skipVote(g.round, myUid, onlineCount())); } finally { busy = false; }
+    return;
+  }
   if (Date.now() < skipUntil) return;
   busy = true;
   skipUntil = Date.now() + SKIP_MS;
@@ -386,7 +430,7 @@ function renderLobby() {
   const host = isHost();
   const m = { ...DEFAULT_META, ...room.meta };
   const fields = [["#setMode", m.mode], ["#setDiff", m.difficulty], ["#setKind", m.kind], ["#setRounds", m.totalRounds],
-    ["#setTarget", m.target], ["#setAttack", m.attackTime], ["#setTime", m.timeLimit], ["#setPenalty", Number(m.penalty) || 0]];
+    ["#setTarget", m.target], ["#setAttack", m.attackTime], ["#setTime", m.timeLimit], ["#setPenalty", Number(m.penalty) || 0], ["#setSource", m.source || "mix"]];
   for (const [id, v] of fields) { const el = $(id); el.value = String(v); el.disabled = !host; }
   $("#cellRounds").classList.toggle("hidden", m.mode !== "rounds");
   $("#cellTarget").classList.toggle("hidden", m.mode !== "race");
@@ -437,7 +481,15 @@ function renderGame() {
 
   const reveal = !attack && g.phase === "reveal";
   $("#reveal").classList.toggle("hidden", !reveal);
-  $("#skipBtn").classList.toggle("hidden", !attack);
+  const skipBtn = $("#skipBtn");
+  if (attack) { skipBtn.textContent = "넘기기"; skipBtn.disabled = !prob; }
+  else {
+    const votes = Object.keys(toObj(g.skips)).length, need = onlineCount(), voted = !!toObj(g.skips)[myUid];
+    skipBtn.textContent = need === 1 ? "넘기기" : voted ? `넘기기 대기 ${votes}/${need}` : votes ? `넘기기 ${votes}/${need}` : "넘기기";
+    skipBtn.disabled = reveal || voted;
+    // 누가 나가서 이미 모두 동의한 상태가 되면 넘김
+    if (!reveal && votes > 0 && votes >= need) applyGame(T.skipVote(g.round, myUid, need));
+  }
   $("#answerInput").disabled = reveal || !prob;
   $("#submitBtn").disabled = reveal || !prob;
   if (reveal) {
@@ -446,7 +498,7 @@ function renderGame() {
     $("#reveal").classList.toggle("missed", !g.winner);
     $("#revealTitle").textContent = g.winner
       ? (g.winner === myUid ? "정답, 1점 획득" : `${w?.name || "?"} 님이 먼저 풀었어요`)
-      : "시간 종료, 아무도 못 풀었어요";
+      : g.skipped ? "넘긴 문제예요" : "시간 종료, 아무도 못 풀었어요";
     tex($("#revealAns"), prob.ansTex);
     $("#revealCat").textContent = `${prob.cat} 문제`;
   }
@@ -527,6 +579,7 @@ function wire() {
   setting("#setAttack", "attackTime", true);
   setting("#setTime", "timeLimit", true);
   setting("#setPenalty", "penalty", true);
+  setting("#setSource", "source");
   $("#answerForm").addEventListener("submit", submitAnswer);
   $("#answerInput").addEventListener("input", (e) => {
     const v = e.target.value; const pv = $("#preview");
